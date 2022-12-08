@@ -148,7 +148,7 @@ pub enum FsEntity {
 pub struct ChangeList {
     deleted: Vec<FsEntity>,
     changed: Vec<FsEntity>,
-    moved: Vec<FsEntity>,
+    moved: Vec<(FsEntity, PathBuf)>,
 }
 
 impl ChangeList {
@@ -168,11 +168,7 @@ impl ChangeList {
             };
             let is_folder = path.ends_with("/");
             let entity = if is_folder {
-                let mut path = PathBuf::from(path);
-                trace!("{path:?}");
-                remove_trailing_slash(&mut path);
-                trace!("rmts: {path:?}");
-                FsEntity::Folder(path)
+                FsEntity::Folder(PathBuf::from(&path[..path.len() - 1]))
             } else {
                 FsEntity::File(PathBuf::from(path))
             };
@@ -244,7 +240,7 @@ impl ChangeList {
                                 if deleted_file_size == metadata.len() { // TODO: check file hash as well?
                                     debug!("found a move for {deleted_path:?}");
                                     deletions_to_keep.push(false);
-                                    self.moved.push(deleted.clone());
+                                    self.moved.push((deleted.clone(), candidate.to_path_buf()));
                                     continue;
                                 }
                             }
