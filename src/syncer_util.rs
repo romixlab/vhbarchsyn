@@ -5,8 +5,8 @@ use chrono::{DateTime, FixedOffset};
 use anyhow::{anyhow, Context, Result};
 use pathsearch::find_executable_in_path;
 use subprocess::{Exec, Redirection};
-use tracing::{debug, instrument, trace, warn};
-use crate::util::{add_trailing_slash, concat_str_path, path_to_str};
+use tracing::{debug, error, info, instrument, trace, warn};
+use crate::util::{add_trailing_slash, concat_str_path, path_to_str, remove_trailing_slash};
 
 pub fn latest_timestamp_named_dir(p: &Path, date_format: &str) -> Result<Option<DateTime<FixedOffset>>> {
     let mut latest: Option<DateTime<FixedOffset>> = None;
@@ -138,12 +138,135 @@ impl RsyncDirection {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum FsEntity {
+    Folder(PathBuf),
+    File(PathBuf),
+}
+
+#[derive(Debug)]
+pub struct ChangeList {
+    deleted: Vec<FsEntity>,
+    changed: Vec<FsEntity>,
+    moved: Vec<FsEntity>,
+}
+
+impl ChangeList {
+    pub fn collect<S: AsRef<str>>(s: S) -> Option<Self> {
+        let mut deleted = Vec::new();
+        let mut changed = Vec::new();
+        let mut lines = s.as_ref().lines();
+        const DEL_PREFIX: &'static str = "'changed-file:del.;";
+        const SEND_PREFIX: &'static str = "'changed-file:send;";
+        for line in lines {
+            let (path, is_deletion) = if line.starts_with(DEL_PREFIX) {
+                (&line[DEL_PREFIX.len() .. line.len() - 1], true)
+            } else if line.starts_with(SEND_PREFIX) {
+                (&line[DEL_PREFIX.len() .. line.len() - 1], false)
+            } else {
+                continue
+            };
+            let is_folder = path.ends_with("/");
+            let entity = if is_folder {
+                let mut path = PathBuf::from(path);
+                trace!("{path:?}");
+                remove_trailing_slash(&mut path);
+                trace!("rmts: {path:?}");
+                FsEntity::Folder(path)
+            } else {
+                FsEntity::File(PathBuf::from(path))
+            };
+            if is_deletion {
+                deleted.push(entity);
+            } else {
+                changed.push(entity);
+            }
+        }
+        if deleted.is_empty() && changed.is_empty() {
+            return None;
+        }
+        Some(ChangeList {
+            deleted,
+            changed,
+            moved: vec![]
+        })
+    }
+
+    pub fn extract_moves(&mut self, archived_dir: &Path, working_dir: &Path) -> Vec<FsEntity> {
+        let mut moved = Vec::new();
+        let mut deletions_to_keep = vec![];
+        for deleted in &self.deleted {
+            match deleted {
+                FsEntity::Folder(_) => {
+                    deletions_to_keep.push(true);
+                },
+                FsEntity::File(deleted_path) => {
+                    let deleted_filename = match deleted_path.file_name() {
+                        Some(filename) => filename,
+                        None => {
+                            deletions_to_keep.push(true);
+                            continue
+                        }
+                    };
+                    // debug!("del_filename: {deleted_filename:?}");
+                    // debug!("del file in archive: {:?}", archived_dir.join(deleted_path));
+                    let deleted_file_size = match fs::metadata(archived_dir.join(deleted_path)) {
+                        Ok(metadata) => {
+                            metadata.len()
+                        },
+                        Err(_) => {
+                            deletions_to_keep.push(true);
+                            continue
+                        }
+                    };
+                    // debug!("fsize: {deleted_file_size}");
+                    let same_filenames = self.changed.iter().fold(Vec::new(), |mut paths, entity| {
+                        match entity {
+                            FsEntity::Folder(_) => {}
+                            FsEntity::File(changed_path) => {
+                                match changed_path.file_name() {
+                                    Some(changed_filename) => {
+                                        if changed_filename == deleted_filename {
+                                            paths.push(changed_path);
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                        }
+                        paths
+                    });
+                    // debug!("same filenames changed: {same_filenames:?}");
+                    for candidate in same_filenames {
+                        match fs::metadata(working_dir.join(candidate)) {
+                            Ok(metadata) => {
+                                // debug!("candidate meta ok, size: {}", metadata.len());
+                                if deleted_file_size == metadata.len() { // TODO: check file hash as well?
+                                    debug!("found a move for {deleted_path:?}");
+                                    deletions_to_keep.push(false);
+                                    self.moved.push(deleted.clone());
+                                    continue;
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    deletions_to_keep.push(true);
+                }
+            }
+        }
+        let mut keep_iter = deletions_to_keep.iter();
+        self.deleted.retain(|_| *keep_iter.next().unwrap());
+        moved
+    }
+}
+
 /// Creates rsync patch file and return Ok(Some(path)) if there are differences, Ok(None) otherwise.
 /// Return an error if rsync is absent or other os related stuff happened.
 /// Runs:
 /// rsync -avz --exclude-from 'temp_sync_exclude.txt' --only-write-batch=/temp/diff --delete --out-format='changed-file:%o;%n'
 #[instrument]
-pub fn rsync_extract_diff(rsync_dir: RsyncDirection, diff_file: &Path, exclude_file: &Path) -> Result<Option<()>> {
+pub fn rsync_extract_diff(rsync_dir: RsyncDirection, diff_file: &Path, exclude_file: &Path) -> Result<Option<ChangeList>> {
     trace!("working");
     let rsync_path =
         find_executable_in_path("rsync").context("Failed to find rsync in PATH")?;
@@ -163,13 +286,14 @@ pub fn rsync_extract_diff(rsync_dir: RsyncDirection, diff_file: &Path, exclude_f
 
     let rsync_output = rsync_exec.stdout_str();
     println!("rsync out: {rsync_output}");
-    let is_changed = rsync_output.contains("changed-file");
-    let deleted_and_moved = if is_changed {
-        Some(())
-    } else {
-        None
-    };
-    Ok(deleted_and_moved)
+
+    if rsync_output.contains("No batched update for") {
+        error!("sad news, rsync failed (no batched update for)");
+        return Err(anyhow!("rsync failure"));
+    }
+
+    let delete_and_move = ChangeList::collect(rsync_output);
+    Ok(delete_and_move)
 }
 
 /// Runs:
@@ -188,10 +312,20 @@ pub fn rsync_apply_diff(dst_folder: &Path, diff_file: &Path, exclude_file: &Path
         .arg(dst_folder);
     debug!("{rsync_exec:?}");
     let rsync_exec = rsync_exec
-        .join()
+        .stdout(Redirection::Pipe)
+        .capture()
         .context("rsync read batch")?;
-    if !rsync_exec.success() {
-        return Err(anyhow!("cp exited with an error"));
+
+    if !rsync_exec.exit_status.success() {
+        return Err(anyhow!("rsync exited with an error"));
     }
+    let rsync_output = rsync_exec.stdout_str();
+    println!("rsync out: {rsync_output}");
+
+    if rsync_output.contains("No batched update for") {
+        error!("sad news, rsync failed");
+        return Err(anyhow!("rsync failure"));
+    }
+
     Ok(())
 }

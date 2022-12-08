@@ -21,7 +21,7 @@ use crate::util::{CpMvMode, fs_copy, fs_move, remove_trailing_slash};
 struct Config {
     #[serde(default = "default_date_format")]
     date_format: String,
-    local_dir: PathBuf,
+    local_working_dir: PathBuf,
     local_archive: PathBuf,
     exclude: PathBuf
 }
@@ -49,7 +49,7 @@ fn main() -> Result<()> {
 
     // remove trailing slashes and add later only if needed
     remove_trailing_slash(&mut config.local_archive);
-    remove_trailing_slash(&mut  config.local_dir);
+    remove_trailing_slash(&mut  config.local_working_dir);
 
     let temp_dir = tempdir()?;
     // let exclude_filename = temp_dir.path().join("exclude.txt");
@@ -86,7 +86,7 @@ fn main() -> Result<()> {
     };
 
     let rsync_dir = RsyncDirection::LocalToLocal {
-        from: config.local_dir.clone(),
+        from: config.local_working_dir.clone(),
         to: latest_archived_path.clone()
     };
     let now = Local::now().format(config.date_format.as_str()).to_string();
@@ -94,7 +94,10 @@ fn main() -> Result<()> {
     let diff_filepath = config.local_archive.join(diff_filename);
     let diff = rsync_extract_diff(rsync_dir, &diff_filepath, &config.exclude)?;
     match diff {
-        Some(()) => {
+        Some(mut changed) => {
+            info!("changed raw: {changed:?}");
+            changed.extract_moves(&latest_archived_path, &config.local_working_dir);
+            info!("try find moved files: {changed:?}");
             if is_fast_forward {
                 info!("fast-forwarding by renaming latest archived folder");
                 fs_move(&latest_archived_path, &config.local_archive, CpMvMode::FolderRename(now.clone()))?;
