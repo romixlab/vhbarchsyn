@@ -7,6 +7,7 @@ use pathsearch::find_executable_in_path;
 use subprocess::{Exec, Redirection};
 use tracing::{debug, error, info, instrument, trace, warn};
 use crate::util::{add_trailing_slash, concat_str_path, path_to_str, remove_trailing_slash};
+use serde::{Serialize, Deserialize};
 
 pub fn latest_timestamp_named_dir(p: &Path, date_format: &str) -> Result<Option<DateTime<FixedOffset>>> {
     let mut latest: Option<DateTime<FixedOffset>> = None;
@@ -138,13 +139,13 @@ impl RsyncDirection {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum FsEntity {
     Folder(PathBuf),
     File(PathBuf),
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ChangeList {
     deleted: Vec<FsEntity>,
     changed: Vec<FsEntity>,
