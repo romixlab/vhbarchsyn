@@ -1,12 +1,13 @@
 use std::{env, io};
 use std::ffi::OsString;
+use std::fmt::Debug;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use path_clean::PathClean;
 use anyhow::{anyhow, Context, Result};
 use pathsearch::find_executable_in_path;
-use subprocess::Exec;
+use subprocess::{Exec, Redirection};
 use tracing::{debug, instrument, trace};
 
 #[allow(dead_code)]
@@ -85,6 +86,24 @@ pub fn fs_move(src_path: &Path, dst_folder: &Path, mode: CpMvMode) -> Result<()>
         return Err(anyhow!("mv exited with an error"));
     }
     Ok(())
+}
+
+#[instrument]
+pub fn ssh_execute_remote<S: AsRef<str> + Debug>(user: S, host: S, port: u16, command: S) -> Result<String> {
+    trace!("executing");
+    let ssh_path = find_executable_in_path("ssh").context("failed to find ssh in PATH")?;
+    let ssh_exec = Exec::cmd(ssh_path)
+        .arg("-p")
+        .arg(format!("{}", port))
+        .arg(format!("{}@{}", user.as_ref(), host.as_ref()))
+        .arg(command.as_ref())
+        .stdout(Redirection::Pipe)
+        .capture()
+        .context("ssh failed")?;
+    if !ssh_exec.exit_status.success() {
+        return Err(anyhow!("ssh exited with an error"));
+    }
+    Ok(ssh_exec.stdout_str())
 }
 
 #[cfg(windows)]

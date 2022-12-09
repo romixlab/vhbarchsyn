@@ -15,7 +15,7 @@ use toml;
 use tracing::{debug, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use crate::syncer_util::{count_timestamp_named_folders, rsync_extract_diff, latest_timestamp_named_dir, rsync_apply_diff, RsyncDirection};
-use crate::util::{CpMvMode, fs_copy, fs_move, remove_trailing_slash};
+use crate::util::{CpMvMode, fs_copy, fs_move, remove_trailing_slash, ssh_execute_remote};
 
 #[derive(Deserialize)]
 struct Config {
@@ -39,6 +39,10 @@ struct Args {
 fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder().with_max_level(Level::TRACE).finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
+    let ls = ssh_execute_remote("roman", "10.211.55.6", 22, "ls -l")?;
+    info!("{ls}");
+    return Ok(());
 
     let args: Args = Args::parse();
 
