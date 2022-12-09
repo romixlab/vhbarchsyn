@@ -539,24 +539,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "syncer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "path-clean",
- "pathsearch",
- "serde",
- "serde_json",
- "subprocess",
- "tempfile",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -689,6 +671,24 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "vhbarchsync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "path-clean",
+ "pathsearch",
+ "serde",
+ "serde_json",
+ "subprocess",
+ "tempfile",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "wasi"
